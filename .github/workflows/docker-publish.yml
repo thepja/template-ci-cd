@@ -1,0 +1,114 @@
+# Publication de l'image construite (et testée) par docker-build.yml, sans reconstruction :
+# tags automatiques, push vers GHCR et attestation de provenance SLSA (dépôts publics).
+# Sortie `tag` : tag immuable à déployer (X.Y.Z sur un tag vX.Y.Z, sinon sha-<court>).
+name: Docker Publish
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Image cible (défaut : ghcr.io/<owner>/<repo>)"
+        type: string
+        default: ""
+      image-artifact:
+        description: "Artefact produit par docker-build.yml"
+        type: string
+        default: image
+      local-tag:
+        description: "Tag local de l'image (celui de docker-build.yml)"
+        type: string
+        default: app:ci
+      attest:
+        description: "Générer une attestation de provenance (ignoré sur un dépôt privé)"
+        type: boolean
+        default: true
+      timeout-minutes:
+        type: number
+        default: 10
+    outputs:
+      image:
+        description: "Image publiée, sans tag"
+        value: ${{ jobs.publish.outputs.image }}
+      tag:
+        description: "Tag immuable à déployer"
+        value: ${{ jobs.publish.outputs.tag }}
+      digest:
+        description: "Digest de l'image publiée"
+        value: ${{ jobs.publish.outputs.digest }}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    name: Push GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      tag: ${{ steps.push.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Nom de l'image
+        id: name
+        env:
+          INPUT: ${{ inputs.image-name }}
+          REPO: ${{ github.repository }}
+        run: |
+          name="${INPUT:-ghcr.io/$REPO}"
+          echo "image=${name,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ inputs.image-artifact }}
+          path: ${{ runner.temp }}
+
+      - name: Métadonnées de l'image
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pousse exactement l'image testée
+      - name: Pousser l'image
+        id: push
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          LOCAL: ${{ inputs.local-tag }}
+        run: |
+          docker load -i "$RUNNER_TEMP/image.tar"
+          for tag in $TAGS; do
+            docker tag "$LOCAL" "$tag"
+            docker push "$tag"
+          done
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$LOCAL" | cut -d@ -f2)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Attestations indisponibles sur les dépôts privés d'un compte personnel
+      - name: Attestation de provenance (SLSA)
+        if: inputs.attest && github.event.repository.private == false
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ${{ steps.name.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

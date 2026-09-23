@@ -1,11 +1,15 @@
-# Exemple : à copier dans <ton-projet>/.github/workflows/ci-cd.yml
-# Application Node : CI sur chaque PR/push, puis release, image Docker et déploiement Render.
+# Exemple : <projet>/.github/workflows/ci-cd.yml
+# Application Node : CI, sécurité, release-please, puis image publiée et déployée sur Render
+# (service Render de type « image ») à chaque release.
 name: CI/CD
 
 on:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,7 +19,7 @@ jobs:
   ci:
     uses: thepja/template-ci-cd/.github/workflows/node-ci.yml@v1
     with:
-      node-versions: '["20", "22"]'
+      node-versions: '["22", "24"]'
       lint-command: npm run lint
       test-command: npm test
       build-command: npm run build
@@ -29,25 +33,31 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: thepja/template-ci-cd/.github/workflows/release.yml@v1
+    uses: thepja/template-ci-cd/.github/workflows/release-please.yml@v1
     with:
       release-type: node
 
-  docker:
+  image:
     if: needs.release.outputs.release-created == 'true'
     needs: release
+    uses: thepja/template-ci-cd/.github/workflows/docker-build.yml@v1
+    with:
+      local-tag: mon-app:ci
+
+  publish:
+    needs: image
     permissions:
       contents: read
       packages: write
-    uses: thepja/template-ci-cd/.github/workflows/docker-build.yml@v1
+      id-token: write
+      attestations: write
+    uses: thepja/template-ci-cd/.github/workflows/docker-publish.yml@v1
     with:
-      push: true
+      local-tag: mon-app:ci
 
   deploy:
-    needs: docker
+    needs: publish
     uses: thepja/template-ci-cd/.github/workflows/deploy-render.yml@v1
     with:
-      image-url: ${{ needs.docker.outputs.image }}@${{ needs.docker.outputs.digest }}
-    secrets:
-      deploy-hook-url: ${{ secrets.RENDER_DEPLOY_HOOK }}
-      api-key: ${{ secrets.RENDER_API_KEY }}
+      image-url: ${{ needs.publish.outputs.image }}:${{ needs.publish.outputs.tag }}
+    secrets: inherit

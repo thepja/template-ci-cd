@@ -1,22 +1,26 @@
-# CI réutilisable pour les projets Node.js (npm, pnpm ou yarn).
-# Exécute : installation, lint, typecheck, tests et build (chaque étape est optionnelle).
+# CI Node.js réutilisable (npm, pnpm ou yarn) : installation, lint, typecheck, tests, build.
+# Chaque étape est optionnelle ; la matrice permet de tester plusieurs versions de Node.
 name: Node CI
 
 on:
   workflow_call:
     inputs:
       node-versions:
-        description: 'Liste JSON des versions de Node à tester, ex. ["20", "22"]'
+        description: 'Liste JSON des versions de Node, ex. ["22", "24"]'
         type: string
-        default: '["22"]'
+        default: '["24"]'
       package-manager:
         description: "npm, pnpm ou yarn"
         type: string
         default: npm
       working-directory:
-        description: "Répertoire du projet (monorepo)"
+        description: "Répertoire du projet (ex. frontend)"
         type: string
         default: "."
+      install-command:
+        description: "Commande d'installation (vide = commande par défaut du package manager, lockfile figé)"
+        type: string
+        default: ""
       lint-command:
         description: "Commande de lint (vide = ignorée)"
         type: string
@@ -34,9 +38,15 @@ on:
         type: string
         default: ""
       upload-artifact:
-        description: "Chemin (relatif au working-directory) du build à publier en artefact (vide = aucun)"
+        description: "Chemin du build à publier en artefact, relatif au working-directory (vide = aucun)"
         type: string
         default: ""
+      artifact-name:
+        type: string
+        default: build
+      timeout-minutes:
+        type: number
+        default: 10
 
 permissions:
   contents: read
@@ -45,6 +55,7 @@ jobs:
   ci:
     name: Node ${{ matrix.node }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,13 +64,13 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Activer corepack (pnpm / yarn)
         if: inputs.package-manager != 'npm'
         run: corepack enable
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node }}
           cache: ${{ inputs.package-manager }}
@@ -68,9 +79,11 @@ jobs:
       - name: Installer les dépendances
         env:
           PM: ${{ inputs.package-manager }}
+          INSTALL: ${{ inputs.install-command }}
         run: |
+          if [[ -n "$INSTALL" ]]; then eval "$INSTALL"; exit; fi
           case "$PM" in
-            npm)  npm ci ;;
+            npm)  npm ci --no-audit --no-fund ;;
             pnpm) pnpm install --frozen-lockfile ;;
             yarn) yarn install --immutable ;;
             *)    echo "::error::package-manager inconnu : $PM"; exit 1 ;;
@@ -94,8 +107,8 @@ jobs:
 
       - name: Publier le build
         if: inputs.upload-artifact != '' && strategy.job-index == 0
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: build
+          name: ${{ inputs.artifact-name }}
           path: ${{ inputs.working-directory }}/${{ inputs.upload-artifact }}
           retention-days: 7

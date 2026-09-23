@@ -1,0 +1,117 @@
+# Déploiement d'un chart Helm dans un environnement GitHub (staging, production...).
+# Le secret KUBE_CONFIG (kubeconfig encodé en base64) est lu dans l'environnement ciblé du
+# dépôt appelant (appeler avec `secrets: inherit`), ce qui permet d'y ajouter des règles de
+# protection (validation manuelle, branches/tags autorisés). Sans ce secret, le déploiement
+# est ignoré avec un avertissement.
+name: Deploy Helm
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Environnement GitHub (ex. staging, production)"
+        type: string
+        required: true
+      image:
+        description: "Image à déployer, avec un tag immuable (dépôt:tag)"
+        type: string
+        required: true
+      chart:
+        description: "Chemin du chart"
+        type: string
+        required: true
+      release:
+        description: "Nom de la release Helm"
+        type: string
+        required: true
+      namespace:
+        description: "Namespace (défaut : <release>-<environment>)"
+        type: string
+        default: ""
+      values-files:
+        description: "Fichiers de valeurs relatifs au chart, séparés par des espaces (défaut : values-<environment>.yaml)"
+        type: string
+        default: ""
+      helm-test:
+        description: "Lancer `helm test` après le déploiement"
+        type: boolean
+        default: true
+      helm-version:
+        type: string
+        default: v3.18.4
+      timeout-minutes:
+        type: number
+        default: 15
+    secrets:
+      KUBE_CONFIG:
+        description: "Kubeconfig encodé en base64 (secret de l'environnement)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    # Jamais deux déploiements simultanés sur le même environnement
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      IMAGE: ${{ inputs.image }}
+      CHART: ${{ inputs.chart }}
+      RELEASE: ${{ inputs.release }}
+      NAMESPACE: ${{ inputs.namespace != '' && inputs.namespace || format('{0}-{1}', inputs.release, inputs.environment) }}
+      VALUES: ${{ inputs.values-files != '' && inputs.values-files || format('values-{0}.yaml', inputs.environment) }}
+    steps:
+      - name: Secret KUBE_CONFIG absent
+        if: env.KUBE_CONFIG == ''
+        run: echo "::warning::Secret KUBE_CONFIG non défini pour l'environnement $ENVIRONMENT, déploiement ignoré."
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        if: env.KUBE_CONFIG != ''
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        if: env.KUBE_CONFIG != ''
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Configurer kubectl
+        if: env.KUBE_CONFIG != ''
+        run: |
+          mkdir -p ~/.kube
+          echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      # --atomic : retour automatique à la version précédente si les pods ne démarrent pas
+      - name: Déployer
+        if: env.KUBE_CONFIG != ''
+        run: |
+          values=()
+          for f in $VALUES; do values+=(-f "$CHART/$f"); done
+          helm upgrade --install "$RELEASE" "$CHART" \
+            --namespace "$NAMESPACE" --create-namespace \
+            "${values[@]}" \
+            --set image.repository="${IMAGE%:*}" \
+            --set-string image.tag="${IMAGE##*:}" \
+            --atomic --wait --timeout 5m --history-max 10
+
+      - name: Vérification post-déploiement
+        if: env.KUBE_CONFIG != '' && inputs.helm-test
+        run: helm test "$RELEASE" -n "$NAMESPACE" --logs
+
+      - name: Résumé
+        if: env.KUBE_CONFIG != ''
+        run: |
+          {
+            echo "### Déployé sur \`$ENVIRONMENT\`"
+            echo "Image : \`$IMAGE\`"
+            echo '```'
+            helm history "$RELEASE" -n "$NAMESPACE" --max 5
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

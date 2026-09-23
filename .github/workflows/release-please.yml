@@ -1,15 +1,14 @@
-# Release automatisée avec release-please.
-# À partir des commits au format Conventional Commits (feat:, fix:, feat!: ...),
-# maintient une PR de release (CHANGELOG + bump de version). Une fois mergée,
-# le tag et la GitHub Release sont créés : les outputs permettent alors de
-# déclencher un build Docker ou un déploiement.
-name: Release
+# Release automatisée avec release-please (alternative aux tags manuels).
+# À partir des commits Conventional Commits (feat:, fix:, feat!: ...), maintient une PR de
+# release (CHANGELOG + bump de version). Une fois mergée, le tag et la GitHub Release sont
+# créés ; les outputs permettent alors d'enchaîner build et déploiement.
+name: Release Please
 
 on:
   workflow_call:
     inputs:
       release-type:
-        description: "Type de projet release-please (node, python, simple, go, rust...)"
+        description: "Type de projet (maven, node, python, simple...)"
         type: string
         default: simple
       config-file:
@@ -22,17 +21,14 @@ on:
         default: ""
     secrets:
       token:
-        description: "Token (PAT ou GitHub App) si les workflows doivent se déclencher sur la PR de release"
+        description: "PAT ou token de GitHub App, si les workflows doivent se déclencher sur la PR de release"
         required: false
     outputs:
       release-created:
-        description: "true si une release vient d'être créée"
         value: ${{ jobs.release-please.outputs.release-created }}
       tag-name:
-        description: "Tag de la release créée"
         value: ${{ jobs.release-please.outputs.tag-name }}
       version:
-        description: "Version de la release créée"
         value: ${{ jobs.release-please.outputs.version }}
 
 permissions:
@@ -42,13 +38,14 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       release-created: ${{ steps.rp.outputs.release_created || 'false' }}
       tag-name: ${{ steps.rp.outputs.tag_name }}
       version: ${{ steps.rp.outputs.version }}
     steps:
       - id: rp
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ secrets.token || secrets.GITHUB_TOKEN }}
           release-type: ${{ inputs.config-file == '' && inputs.release-type || '' }}

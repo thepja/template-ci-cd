@@ -1,0 +1,72 @@
+# Validation d'un chart Helm : `helm lint --strict` puis validation des manifests rendus
+# avec kubeconform, pour chaque fichier de valeurs (un par environnement).
+name: Helm Lint
+
+on:
+  workflow_call:
+    inputs:
+      chart:
+        description: "Chemin du chart (ex. helm/mon-app)"
+        type: string
+        required: true
+      values-files:
+        description: "Fichiers de valeurs à tester, relatifs au chart, séparés par des espaces (vide = valeurs par défaut)"
+        type: string
+        default: ""
+      helm-version:
+        type: string
+        default: v3.18.4
+      kubeconform-version:
+        type: string
+        default: v0.7.0
+      kubeconform-sha256:
+        description: "Empreinte de kubeconform-linux-amd64.tar.gz (à changer avec la version)"
+        type: string
+        default: c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3
+      timeout-minutes:
+        type: number
+        default: 5
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Helm lint
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Installer kubeconform
+        env:
+          VERSION: ${{ inputs.kubeconform-version }}
+          SHA256: ${{ inputs.kubeconform-sha256 }}
+        run: |
+          curl -sSfLO "https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${SHA256}  kubeconform-linux-amd64.tar.gz" | sha256sum -c -
+          tar xzf kubeconform-linux-amd64.tar.gz kubeconform
+
+      - name: Lint et validation des manifests
+        env:
+          CHART: ${{ inputs.chart }}
+          VALUES: ${{ inputs.values-files }}
+        run: |
+          set -o pipefail
+          check() {
+            helm lint --strict "$CHART" "$@"
+            helm template ci "$CHART" "$@" | ./kubeconform -strict -summary -
+          }
+          if [[ -z "$VALUES" ]]; then
+            check
+          else
+            for f in $VALUES; do
+              echo "::group::$f"
+              check -f "$CHART/$f"
+              echo "::endgroup::"
+            done
+          fi

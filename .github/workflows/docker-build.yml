@@ -1,137 +1,130 @@
-# Build (et push optionnel) d'une image Docker multi-architecture vers un registre
-# (GHCR par défaut), avec tags automatiques et scan de vulnérabilités Trivy.
+# Construction d'une image Docker selon le principe « construire une fois, déployer partout » :
+# l'image est construite une seule fois, testée (smoke test), scannée, puis conservée en
+# artefact (tar) pour les jobs suivants (test Kubernetes, publication avec docker-publish.yml).
 name: Docker Build
 
 on:
   workflow_call:
     inputs:
-      image-name:
-        description: "Nom de l'image (défaut : <owner>/<repo>)"
-        type: string
-        default: ""
-      registry:
-        description: "Registre cible"
-        type: string
-        default: ghcr.io
       context:
         description: "Contexte de build Docker"
         type: string
         default: "."
       dockerfile:
-        description: "Chemin du Dockerfile"
+        description: "Chemin du Dockerfile, relatif au contexte"
         type: string
-        default: "Dockerfile"
-      platforms:
-        description: "Plateformes cibles"
-        type: string
-        default: "linux/amd64"
-      push:
-        description: "Pousser l'image (false = build seul, ex. sur une PR)"
-        type: boolean
-        default: false
+        default: Dockerfile
       build-args:
         description: "Build args, un par ligne (KEY=VALUE)"
         type: string
         default: ""
-      scan:
-        description: "Scanner l'image avec Trivy"
-        type: boolean
-        default: true
-      scan-fail-on:
-        description: "Sévérités qui font échouer le scan (vide = rapport seulement)"
+      image-name:
+        description: "Nom de l'image pour les labels OCI (défaut : ghcr.io/<owner>/<repo>)"
         type: string
-        default: "CRITICAL"
-    secrets:
-      registry-username:
-        description: "Utilisateur du registre (défaut GHCR : github.actor)"
-        required: false
-      registry-password:
-        description: "Mot de passe / token du registre (défaut GHCR : GITHUB_TOKEN)"
-        required: false
+        default: ""
+      local-tag:
+        description: "Tag local de l'image testée (réutilisé par k8s-test et docker-publish)"
+        type: string
+        default: app:ci
+      smoke-command:
+        description: "Commande de smoke test (vide = aucune). Variable disponible : $IMAGE"
+        type: string
+        default: ""
+      scanner:
+        description: "Scanner de vulnérabilités : grype, trivy ou none"
+        type: string
+        default: grype
+      scan-severity:
+        description: "Sévérité minimale qui fait échouer le scan : low, medium, high, critical"
+        type: string
+        default: high
+      artifact-name:
+        description: "Nom de l'artefact contenant l'image"
+        type: string
+        default: image
+      timeout-minutes:
+        type: number
+        default: 20
     outputs:
-      image:
-        description: "Référence de l'image (registre/nom)"
-        value: ${{ jobs.build.outputs.image }}
-      digest:
-        description: "Digest de l'image poussée"
-        value: ${{ jobs.build.outputs.digest }}
-      tags:
-        description: "Tags générés"
-        value: ${{ jobs.build.outputs.tags }}
+      local-tag:
+        description: "Tag local de l'image"
+        value: ${{ inputs.local-tag }}
+      artifact-name:
+        description: "Nom de l'artefact contenant l'image"
+        value: ${{ inputs.artifact-name }}
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build:
+  image:
+    name: Build, smoke test et scan
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.name.outputs.image }}
-      digest: ${{ steps.build.outputs.digest }}
-      tags: ${{ steps.meta.outputs.tags }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      IMAGE: ${{ inputs.local-tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Calculer le nom de l'image
-        id: name
-        env:
-          INPUT_NAME: ${{ inputs.image-name }}
-          REGISTRY: ${{ inputs.registry }}
-          REPO: ${{ github.repository }}
-        run: |
-          name="${INPUT_NAME:-$REPO}"
-          echo "image=${REGISTRY}/${name,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/setup-qemu-action@v4
-        if: contains(inputs.platforms, ',')
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Connexion au registre
-        if: inputs.push
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ inputs.registry }}
-          username: ${{ secrets.registry-username || github.actor }}
-          password: ${{ secrets.registry-password || secrets.GITHUB_TOKEN }}
-
-      - name: Métadonnées (tags et labels)
+      - name: Métadonnées de l'image
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ steps.name.outputs.image }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+          images: ${{ inputs.image-name != '' && inputs.image-name || format('ghcr.io/{0}', github.repository) }}
 
-      - name: Build${{ inputs.push && ' et push' || '' }}
-        id: build
-        uses: docker/build-push-action@v7
+      - name: Construire l'image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.context }}/${{ inputs.dockerfile }}
-          platforms: ${{ inputs.platforms }}
-          push: ${{ inputs.push }}
-          load: ${{ !inputs.push && !contains(inputs.platforms, ',') }}
           build-args: ${{ inputs.build-args }}
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ inputs.local-tag }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Scan Trivy
-        if: inputs.scan && (inputs.push || !contains(inputs.platforms, ','))
-        uses: aquasecurity/trivy-action@v0.36.0
-        env:
-          TRIVY_USERNAME: ${{ inputs.push && (secrets.registry-username || github.actor) || '' }}
-          TRIVY_PASSWORD: ${{ inputs.push && (secrets.registry-password || secrets.GITHUB_TOKEN) || '' }}
+      - name: Charger l'image
+        run: docker load -i "$RUNNER_TEMP/image.tar"
+
+      - name: Smoke test
+        if: inputs.smoke-command != ''
+        run: ${{ inputs.smoke-command }}
+
+      - name: Scan de vulnérabilités (Grype)
+        if: inputs.scanner == 'grype'
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image-ref: ${{ inputs.push && format('{0}@{1}', steps.name.outputs.image, steps.build.outputs.digest) || fromJSON(steps.meta.outputs.json).tags[0] }}
+          image: ${{ inputs.local-tag }}
+          fail-build: true
+          severity-cutoff: ${{ inputs.scan-severity }}
+          only-fixed: true
+          output-format: table
+
+      - name: Sévérités Trivy
+        if: inputs.scanner == 'trivy'
+        id: trivy
+        env:
+          MIN: ${{ inputs.scan-severity }}
+        run: |
+          all=(LOW MEDIUM HIGH CRITICAL); out=(); keep=false
+          for s in "${all[@]}"; do [[ "$s" == "${MIN^^}" ]] && keep=true; $keep && out+=("$s"); done
+          (IFS=,; echo "severity=${out[*]}" >> "$GITHUB_OUTPUT")
+
+      - name: Scan de vulnérabilités (Trivy)
+        if: inputs.scanner == 'trivy'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ inputs.local-tag }}
           ignore-unfixed: true
-          severity: ${{ inputs.scan-fail-on != '' && inputs.scan-fail-on || 'CRITICAL,HIGH' }}
-          exit-code: ${{ inputs.scan-fail-on != '' && '1' || '0' }}
+          severity: ${{ steps.trivy.outputs.severity }}
+          exit-code: "1"
+
+      - name: Conserver l'image pour les jobs suivants
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1

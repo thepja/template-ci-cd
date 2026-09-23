@@ -1,0 +1,42 @@
+# Analyse CodeQL réutilisable. Ignorée sur les dépôts privés (GitHub Advanced Security requis).
+name: CodeQL
+
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: "Langages, séparés par des virgules (java-kotlin, javascript-typescript, python...)"
+        type: string
+        required: true
+      build-mode:
+        description: "none ou autobuild (manual : utiliser un workflow dédié)"
+        type: string
+        default: none
+      queries:
+        type: string
+        default: security-and-quality
+      timeout-minutes:
+        type: number
+        default: 20
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyse
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          languages: ${{ inputs.languages }}
+          build-mode: ${{ inputs.build-mode }}
+          queries: ${{ inputs.queries }}
+
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1

@@ -1,0 +1,119 @@
+# CI Java / Maven réutilisable.
+# Calcule la version (tag v1.2.3 -> 1.2.3, sinon 0.0.0-<sha court>), lance le build Maven
+# (par défaut `verify` : tests unitaires, intégration, couverture... selon le pom.xml)
+# avec -Drevision=<version>, puis publie les rapports et, optionnellement, le JAR.
+name: Java Maven CI
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: "Version de Java"
+        type: string
+        default: "21"
+      java-distribution:
+        description: "Distribution de Java (temurin, corretto, zulu...)"
+        type: string
+        default: temurin
+      working-directory:
+        description: "Répertoire du projet Maven"
+        type: string
+        default: "."
+      maven-goals:
+        description: "Goals et options Maven"
+        type: string
+        default: "verify"
+      reports-path:
+        description: "Rapports à publier (un chemin par ligne, relatifs au working-directory)"
+        type: string
+        default: |
+          target/surefire-reports/
+          target/failsafe-reports/
+          target/site/jacoco/
+      artifact-path:
+        description: "Livrable à publier en artefact (ex. target/app.jar), vide = aucun"
+        type: string
+        default: ""
+      artifact-name:
+        description: "Nom de l'artefact du livrable"
+        type: string
+        default: jar
+      timeout-minutes:
+        type: number
+        default: 15
+    outputs:
+      version:
+        description: "Version calculée"
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Maven
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: ${{ inputs.java-distribution }}
+          java-version: ${{ inputs.java-version }}
+          cache: maven
+          cache-dependency-path: ${{ inputs.working-directory }}/**/pom.xml
+
+      - name: Calculer la version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Maven
+        env:
+          GOALS: ${{ inputs.maven-goals }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mvn=mvn; [[ -x ./mvnw ]] && mvn=./mvnw
+          # shellcheck disable=SC2086 # GOALS contient plusieurs arguments
+          "$mvn" -B $GOALS -Drevision="$VERSION"
+
+      - name: Préparer les chemins des rapports
+        if: always()
+        id: paths
+        env:
+          WD: ${{ inputs.working-directory }}
+          REPORTS: ${{ inputs.reports-path }}
+        run: |
+          {
+            echo "reports<<EOF"
+            while IFS= read -r p; do [[ -n "$p" ]] && echo "$WD/$p"; done <<<"$REPORTS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rapports de tests et couverture
+        if: always() && inputs.reports-path != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: reports
+          path: ${{ steps.paths.outputs.reports }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Livrable
+        if: inputs.artifact-path != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/${{ inputs.artifact-path }}
+          if-no-files-found: error
+          retention-days: 14

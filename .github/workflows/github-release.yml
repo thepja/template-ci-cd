@@ -1,0 +1,42 @@
+# Création d'une GitHub Release pour le tag courant (à appeler sur un push de tag v*),
+# avec notes générées automatiquement et livrables joints (artefacts d'un job précédent).
+name: GitHub Release
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: "Artefact à télécharger et joindre à la release (vide = aucun)"
+        type: string
+        default: ""
+      files:
+        description: "Fichiers à joindre (glob, un par ligne), relatifs au contenu de l'artefact"
+        type: string
+        default: ""
+      generate-release-notes:
+        type: boolean
+        default: true
+      prerelease:
+        description: "auto = pré-release si la version contient un tiret (ex. 1.0.0-rc.1)"
+        type: string
+        default: auto
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: inputs.artifact-name != ''
+        with:
+          name: ${{ inputs.artifact-name }}
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: ${{ inputs.files }}
+          generate_release_notes: ${{ inputs.generate-release-notes }}
+          prerelease: ${{ inputs.prerelease == 'auto' && contains(github.ref_name, '-') || inputs.prerelease == 'true' }}

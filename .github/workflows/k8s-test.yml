@@ -1,0 +1,110 @@
+# Test de déploiement Kubernetes éphémère : crée un cluster kind, y charge l'image construite
+# par docker-build.yml, déploie le chart Helm (--atomic), teste optionnellement une montée de
+# version (rolling update), puis lance `helm test`.
+name: Kubernetes Test
+
+on:
+  workflow_call:
+    inputs:
+      chart:
+        description: "Chemin du chart"
+        type: string
+        required: true
+      release:
+        description: "Nom de la release Helm"
+        type: string
+        required: true
+      namespace:
+        description: "Namespace (défaut : <release>-test)"
+        type: string
+        default: ""
+      values-files:
+        description: "Fichiers de valeurs relatifs au chart, séparés par des espaces"
+        type: string
+        default: ""
+      image-artifact:
+        description: "Artefact produit par docker-build.yml"
+        type: string
+        default: image
+      local-tag:
+        description: "Tag local de l'image (celui de docker-build.yml)"
+        type: string
+        default: app:ci
+      rollout-test-args:
+        description: "Options helm d'un 2e déploiement pour tester la montée de version (vide = pas de test)"
+        type: string
+        default: ""
+      helm-version:
+        type: string
+        default: v3.18.4
+      timeout-minutes:
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    name: Déploiement kind
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      CHART: ${{ inputs.chart }}
+      RELEASE: ${{ inputs.release }}
+      NAMESPACE: ${{ inputs.namespace != '' && inputs.namespace || format('{0}-test', inputs.release) }}
+      VALUES: ${{ inputs.values-files }}
+      IMAGE: ${{ inputs.local-tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ inputs.image-artifact }}
+          path: ${{ runner.temp }}
+
+      - name: Créer le cluster kind
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: ci
+
+      - name: Charger l'image et définir la fonction de déploiement
+        run: |
+          kind load image-archive "$RUNNER_TEMP/image.tar" --name ci
+          cat > "$RUNNER_TEMP/deploy.sh" <<'SH'
+          set -euo pipefail
+          values=()
+          for f in $VALUES; do values+=(-f "$CHART/$f"); done
+          helm upgrade --install "$RELEASE" "$CHART" \
+            --namespace "$NAMESPACE" --create-namespace \
+            "${values[@]}" \
+            --set image.repository="${IMAGE%:*}" \
+            --set-string image.tag="${IMAGE##*:}" \
+            --atomic --wait --timeout 5m --history-max 10 \
+            "$@"
+          SH
+
+      - name: Déployer le chart
+        run: bash "$RUNNER_TEMP/deploy.sh"
+
+      - name: Test de montée de version (rolling update)
+        if: inputs.rollout-test-args != ''
+        env:
+          ARGS: ${{ inputs.rollout-test-args }}
+        run: |
+          # shellcheck disable=SC2086 # ARGS contient plusieurs options helm
+          bash "$RUNNER_TEMP/deploy.sh" $ARGS
+
+      - name: helm test
+        run: helm test "$RELEASE" -n "$NAMESPACE" --logs
+
+      - name: Diagnostic en cas d'échec
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get all,events || true
+          kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" logs -l "app.kubernetes.io/instance=$RELEASE" --tail=100 || true
