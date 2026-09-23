@@ -21,11 +21,11 @@ Projet de référence : [thepja/first-app](https://github.com/thepja/first-app) 
 | [`node-ci.yml`](.github/workflows/node-ci.yml) | npm / pnpm / yarn : install, lint, typecheck, tests, build, matrice de versions | — |
 | [`python-ci.yml`](.github/workflows/python-ci.yml) | uv : ruff, typecheck, pytest, matrice de versions | — |
 | [`helm-lint.yml`](.github/workflows/helm-lint.yml) | `helm lint --strict` + kubeconform pour chaque fichier de valeurs | — |
-| [`docker-build.yml`](.github/workflows/docker-build.yml) | Build de l'image, smoke test, scan Grype ou Trivy, image conservée en artefact | — |
+| [`docker-build.yml`](.github/workflows/docker-build.yml) | Build de l'image, smoke test HTTP intégré (`smoke-checks`, arrêt propre sur SIGTERM), scan Grype ou Trivy, image conservée en artefact | — |
 | [`k8s-test.yml`](.github/workflows/k8s-test.yml) | Déploiement du chart sur un cluster kind éphémère, test de rolling update, `helm test` | — |
 | [`docker-publish.yml`](.github/workflows/docker-publish.yml) | Push de l'image testée sur GHCR, tags auto, attestation SLSA ; sortie `tag` immuable | `packages: write`, `id-token: write`, `attestations: write` |
 | [`deploy-helm.yml`](.github/workflows/deploy-helm.yml) | Déploiement Helm dans un environnement GitHub (secret `KUBE_CONFIG`) | — |
-| [`deploy-render.yml`](.github/workflows/deploy-render.yml) | Déploiement Render via Deploy Hook (par commit ou par image), attente de la version | — |
+| [`deploy-render.yml`](.github/workflows/deploy-render.yml) | Déploiement Render via Deploy Hook (par commit ou par image), attente de la version, vérifications HTTP (`smoke-checks`) | — |
 | [`github-release.yml`](.github/workflows/github-release.yml) | GitHub Release sur un tag `v*`, notes générées, livrables joints | `contents: write` |
 | [`release-please.yml`](.github/workflows/release-please.yml) | Versionnage et CHANGELOG automatiques (Conventional Commits) | `contents: write`, `pull-requests: write` |
 | [`codeql.yml`](.github/workflows/codeql.yml) | Analyse CodeQL (ignorée sur les dépôts privés) | `security-events: write`, `actions: read` |
