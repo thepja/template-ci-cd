@@ -1,0 +1,87 @@
+# Déploiement sur Render via un Deploy Hook, avec attente du résultat.
+# - deploy-hook-url : Render > Service > Settings > Deploy Hook (secret)
+# - api-key (optionnel) : permet d'attendre la fin du déploiement et d'échouer s'il échoue
+# Si image-url est fourni (service basé sur une image), Render déploie cette image.
+name: Deploy Render
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Environnement GitHub (règles de protection, URL affichée)"
+        type: string
+        default: production
+      environment-url:
+        description: "URL publique du service (affichée dans GitHub)"
+        type: string
+        default: ""
+      image-url:
+        description: "Image à déployer (ex. ghcr.io/owner/app@sha256:...), vide = dernier commit"
+        type: string
+        default: ""
+      wait-timeout-minutes:
+        description: "Durée max d'attente de la fin du déploiement"
+        type: number
+        default: 15
+    secrets:
+      deploy-hook-url:
+        required: true
+      api-key:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-render-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment-url }}
+    steps:
+      - name: Déclencher le déploiement
+        id: trigger
+        env:
+          HOOK: ${{ secrets.deploy-hook-url }}
+          IMAGE: ${{ inputs.image-url }}
+        run: |
+          url="$HOOK"
+          if [ -n "$IMAGE" ]; then
+            sep='?'; case "$url" in *\?*) sep='&' ;; esac
+            url="${url}${sep}imgURL=$(jq -rn --arg v "$IMAGE" '$v|@uri')"
+          fi
+          resp=$(curl -fsS -X POST "$url")
+          deploy_id=$(jq -r '.deploy.id // empty' <<<"$resp")
+          echo "Déploiement déclenché : ${deploy_id:-inconnu}"
+          echo "deploy-id=$deploy_id" >> "$GITHUB_OUTPUT"
+
+      - name: Attendre la fin du déploiement
+        if: steps.trigger.outputs.deploy-id != ''
+        env:
+          API_KEY: ${{ secrets.api-key }}
+          HOOK: ${{ secrets.deploy-hook-url }}
+          DEPLOY_ID: ${{ steps.trigger.outputs.deploy-id }}
+          TIMEOUT_MIN: ${{ inputs.wait-timeout-minutes }}
+        run: |
+          if [ -z "$API_KEY" ]; then
+            echo "Pas d'api-key : on n'attend pas la fin du déploiement."
+            exit 0
+          fi
+          service_id=$(grep -oE 'srv-[a-z0-9]+' <<<"$HOOK" | head -1)
+          deadline=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            status=$(curl -fsS -H "Authorization: Bearer $API_KEY" \
+              "https://api.render.com/v1/services/$service_id/deploys/$DEPLOY_ID" | jq -r '.status')
+            echo "Statut : $status"
+            case "$status" in
+              live) exit 0 ;;
+              build_failed|update_failed|canceled|pre_deploy_failed|deactivated)
+                echo "::error::Déploiement Render en échec ($status)"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "::error::Délai dépassé en attendant le déploiement Render"; exit 1

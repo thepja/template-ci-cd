@@ -1,0 +1,53 @@
+# Exemple : à copier dans <ton-projet>/.github/workflows/ci-cd.yml
+# Application Node : CI sur chaque PR/push, puis release, image Docker et déploiement Render.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: thepja/template-ci-cd/.github/workflows/node-ci.yml@v1
+    with:
+      node-versions: '["20", "22"]'
+      lint-command: npm run lint
+      test-command: npm test
+      build-command: npm run build
+
+  security:
+    uses: thepja/template-ci-cd/.github/workflows/security.yml@v1
+
+  release:
+    if: github.event_name == 'push'
+    needs: [ci, security]
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: thepja/template-ci-cd/.github/workflows/release.yml@v1
+    with:
+      release-type: node
+
+  docker:
+    if: needs.release.outputs.release-created == 'true'
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: thepja/template-ci-cd/.github/workflows/docker-build.yml@v1
+    with:
+      push: true
+
+  deploy:
+    needs: docker
+    uses: thepja/template-ci-cd/.github/workflows/deploy-render.yml@v1
+    with:
+      image-url: ${{ needs.docker.outputs.image }}@${{ needs.docker.outputs.digest }}
+    secrets:
+      deploy-hook-url: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      api-key: ${{ secrets.RENDER_API_KEY }}

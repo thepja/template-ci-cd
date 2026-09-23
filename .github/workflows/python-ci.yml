@@ -1,0 +1,69 @@
+# CI réutilisable pour les projets Python, basée sur uv.
+# Exécute : installation, lint (ruff), typecheck et tests (pytest par défaut).
+name: Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        description: 'Liste JSON des versions de Python à tester, ex. ["3.12", "3.13"]'
+        type: string
+        default: '["3.13"]'
+      working-directory:
+        description: "Répertoire du projet (monorepo)"
+        type: string
+        default: "."
+      install-command:
+        description: "Commande d'installation des dépendances"
+        type: string
+        default: "uv sync --all-extras --dev"
+      lint-command:
+        description: "Commande de lint (vide = ignorée)"
+        type: string
+        default: "uvx ruff check . && uvx ruff format --check ."
+      typecheck-command:
+        description: "Commande de vérification de types (vide = ignorée)"
+        type: string
+        default: ""
+      test-command:
+        description: "Commande de tests (vide = ignorée)"
+        type: string
+        default: "uv run pytest"
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.python-versions) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Installer les dépendances
+        run: ${{ inputs.install-command }}
+
+      - name: Lint
+        if: inputs.lint-command != ''
+        run: ${{ inputs.lint-command }}
+
+      - name: Typecheck
+        if: inputs.typecheck-command != ''
+        run: ${{ inputs.typecheck-command }}
+
+      - name: Tests
+        if: inputs.test-command != ''
+        run: ${{ inputs.test-command }}

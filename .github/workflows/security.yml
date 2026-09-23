@@ -1,0 +1,71 @@
+# Analyses de sécurité réutilisables :
+#  - détection de secrets commités (gitleaks)
+#  - vulnérabilités des dépendances et mauvaises configurations (Trivy, mode filesystem)
+#  - revue des nouvelles dépendances introduites par une PR (dependency-review)
+name: Security
+
+on:
+  workflow_call:
+    inputs:
+      secrets-scan:
+        description: "Activer gitleaks"
+        type: boolean
+        default: true
+      fs-scan:
+        description: "Activer Trivy sur le dépôt"
+        type: boolean
+        default: true
+      fs-scan-fail-on:
+        description: "Sévérités qui font échouer Trivy (vide = rapport seulement)"
+        type: string
+        default: "CRITICAL"
+      dependency-review:
+        description: "Activer dependency-review sur les pull requests"
+        type: boolean
+        default: true
+    secrets:
+      gitleaks-license:
+        description: "Licence gitleaks (requise uniquement pour les dépôts d'organisation)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secrets (gitleaks)
+    if: inputs.secrets-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.gitleaks-license }}
+
+  trivy:
+    name: Dépendances & config (Trivy)
+    if: inputs.fs-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig
+          ignore-unfixed: true
+          severity: ${{ inputs.fs-scan-fail-on != '' && inputs.fs-scan-fail-on || 'CRITICAL,HIGH' }}
+          exit-code: ${{ inputs.fs-scan-fail-on != '' && '1' || '0' }}
+
+  dependency-review:
+    name: Revue des dépendances
+    if: inputs.dependency-review && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high

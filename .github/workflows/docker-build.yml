@@ -1,0 +1,137 @@
+# Build (et push optionnel) d'une image Docker multi-architecture vers un registre
+# (GHCR par défaut), avec tags automatiques et scan de vulnérabilités Trivy.
+name: Docker Build
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Nom de l'image (défaut : <owner>/<repo>)"
+        type: string
+        default: ""
+      registry:
+        description: "Registre cible"
+        type: string
+        default: ghcr.io
+      context:
+        description: "Contexte de build Docker"
+        type: string
+        default: "."
+      dockerfile:
+        description: "Chemin du Dockerfile"
+        type: string
+        default: "Dockerfile"
+      platforms:
+        description: "Plateformes cibles"
+        type: string
+        default: "linux/amd64"
+      push:
+        description: "Pousser l'image (false = build seul, ex. sur une PR)"
+        type: boolean
+        default: false
+      build-args:
+        description: "Build args, un par ligne (KEY=VALUE)"
+        type: string
+        default: ""
+      scan:
+        description: "Scanner l'image avec Trivy"
+        type: boolean
+        default: true
+      scan-fail-on:
+        description: "Sévérités qui font échouer le scan (vide = rapport seulement)"
+        type: string
+        default: "CRITICAL"
+    secrets:
+      registry-username:
+        description: "Utilisateur du registre (défaut GHCR : github.actor)"
+        required: false
+      registry-password:
+        description: "Mot de passe / token du registre (défaut GHCR : GITHUB_TOKEN)"
+        required: false
+    outputs:
+      image:
+        description: "Référence de l'image (registre/nom)"
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: "Digest de l'image poussée"
+        value: ${{ jobs.build.outputs.digest }}
+      tags:
+        description: "Tags générés"
+        value: ${{ jobs.build.outputs.tags }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Calculer le nom de l'image
+        id: name
+        env:
+          INPUT_NAME: ${{ inputs.image-name }}
+          REGISTRY: ${{ inputs.registry }}
+          REPO: ${{ github.repository }}
+        run: |
+          name="${INPUT_NAME:-$REPO}"
+          echo "image=${REGISTRY}/${name,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v4
+        if: contains(inputs.platforms, ',')
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Connexion au registre
+        if: inputs.push
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.registry-username || github.actor }}
+          password: ${{ secrets.registry-password || secrets.GITHUB_TOKEN }}
+
+      - name: Métadonnées (tags et labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build${{ inputs.push && ' et push' || '' }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push && !contains(inputs.platforms, ',') }}
+          build-args: ${{ inputs.build-args }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Trivy
+        if: inputs.scan && (inputs.push || !contains(inputs.platforms, ','))
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ inputs.push && (secrets.registry-username || github.actor) || '' }}
+          TRIVY_PASSWORD: ${{ inputs.push && (secrets.registry-password || secrets.GITHUB_TOKEN) || '' }}
+        with:
+          image-ref: ${{ inputs.push && format('{0}@{1}', steps.name.outputs.image, steps.build.outputs.digest) || fromJSON(steps.meta.outputs.json).tags[0] }}
+          ignore-unfixed: true
+          severity: ${{ inputs.scan-fail-on != '' && inputs.scan-fail-on || 'CRITICAL,HIGH' }}
+          exit-code: ${{ inputs.scan-fail-on != '' && '1' || '0' }}

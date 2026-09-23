@@ -1,0 +1,27 @@
+# Exemple : à copier dans <ton-projet>/.github/workflows/ci.yml
+# Projet Python (uv) : CI sur plusieurs versions + sécurité + image Docker construite sur les PR.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    uses: thepja/template-ci-cd/.github/workflows/python-ci.yml@v1
+    with:
+      python-versions: '["3.12", "3.13"]'
+      typecheck-command: uv run mypy .
+
+  security:
+    uses: thepja/template-ci-cd/.github/workflows/security.yml@v1
+
+  docker:
+    needs: ci
+    permissions:
+      contents: read
+      packages: write
+    uses: thepja/template-ci-cd/.github/workflows/docker-build.yml@v1
+    with:
+      push: ${{ github.event_name == 'push' }}

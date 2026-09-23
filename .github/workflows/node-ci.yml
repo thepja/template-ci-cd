@@ -1,0 +1,101 @@
+# CI réutilisable pour les projets Node.js (npm, pnpm ou yarn).
+# Exécute : installation, lint, typecheck, tests et build (chaque étape est optionnelle).
+name: Node CI
+
+on:
+  workflow_call:
+    inputs:
+      node-versions:
+        description: 'Liste JSON des versions de Node à tester, ex. ["20", "22"]'
+        type: string
+        default: '["22"]'
+      package-manager:
+        description: "npm, pnpm ou yarn"
+        type: string
+        default: npm
+      working-directory:
+        description: "Répertoire du projet (monorepo)"
+        type: string
+        default: "."
+      lint-command:
+        description: "Commande de lint (vide = ignorée)"
+        type: string
+        default: ""
+      typecheck-command:
+        description: "Commande de vérification de types (vide = ignorée)"
+        type: string
+        default: ""
+      test-command:
+        description: "Commande de tests (vide = ignorée)"
+        type: string
+        default: ""
+      build-command:
+        description: "Commande de build (vide = ignorée)"
+        type: string
+        default: ""
+      upload-artifact:
+        description: "Chemin (relatif au working-directory) du build à publier en artefact (vide = aucun)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(inputs.node-versions) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Activer corepack (pnpm / yarn)
+        if: inputs.package-manager != 'npm'
+        run: corepack enable
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ inputs.working-directory }}/${{ inputs.package-manager == 'pnpm' && 'pnpm-lock.yaml' || inputs.package-manager == 'yarn' && 'yarn.lock' || 'package-lock.json' }}
+
+      - name: Installer les dépendances
+        env:
+          PM: ${{ inputs.package-manager }}
+        run: |
+          case "$PM" in
+            npm)  npm ci ;;
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --immutable ;;
+            *)    echo "::error::package-manager inconnu : $PM"; exit 1 ;;
+          esac
+
+      - name: Lint
+        if: inputs.lint-command != ''
+        run: ${{ inputs.lint-command }}
+
+      - name: Typecheck
+        if: inputs.typecheck-command != ''
+        run: ${{ inputs.typecheck-command }}
+
+      - name: Tests
+        if: inputs.test-command != ''
+        run: ${{ inputs.test-command }}
+
+      - name: Build
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+
+      - name: Publier le build
+        if: inputs.upload-artifact != '' && strategy.job-index == 0
+        uses: actions/upload-artifact@v7
+        with:
+          name: build
+          path: ${{ inputs.working-directory }}/${{ inputs.upload-artifact }}
+          retention-days: 7
