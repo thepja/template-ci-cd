@@ -26,8 +26,29 @@ on:
         description: "Tag local de l'image testée (réutilisé par k8s-test et docker-publish)"
         type: string
         default: app:ci
+      smoke-checks:
+        description: |
+          Smoke test HTTP intégré (vide = aucun). Le conteneur est démarré, puis chaque ligne
+          « <chemin> [corps attendu] » est vérifiée : réponse 2xx et, si fourni, corps identique.
+          La première ligne sert aussi à attendre le démarrage. Ex. :
+            /health
+            /hello?name=CI Hello, CI!
+        type: string
+        default: ""
+      smoke-port:
+        description: "Port HTTP du conteneur"
+        type: number
+        default: 8080
+      smoke-run-args:
+        description: "Options de `docker run` pour le smoke test"
+        type: string
+        default: "--read-only --tmpfs /tmp"
+      smoke-graceful-stop:
+        description: "Exiger un arrêt propre sur SIGTERM (en moins de 10 s)"
+        type: boolean
+        default: true
       smoke-command:
-        description: "Commande de smoke test (vide = aucune). Variable disponible : $IMAGE"
+        description: "Commande de smoke test personnalisée, en plus ou à la place (variable : $IMAGE)"
         type: string
         default: ""
       scanner:
@@ -89,7 +110,36 @@ jobs:
       - name: Charger l'image
         run: docker load -i "$RUNNER_TEMP/image.tar"
 
-      - name: Smoke test
+      - name: Smoke test HTTP
+        if: inputs.smoke-checks != ''
+        env:
+          CHECKS: ${{ inputs.smoke-checks }}
+          PORT: ${{ inputs.smoke-port }}
+          RUN_ARGS: ${{ inputs.smoke-run-args }}
+          GRACEFUL: ${{ inputs.smoke-graceful-stop }}
+        run: |
+          # shellcheck disable=SC2086 # RUN_ARGS contient plusieurs options
+          docker run -d -p "$PORT:$PORT" -e PORT="$PORT" $RUN_ARGS --name smoke "$IMAGE"
+          trap 'docker logs smoke; docker rm -f smoke >/dev/null 2>&1 || true' EXIT
+          base="http://localhost:$PORT"
+          first=$(awk 'NF{print $1; exit}' <<<"$CHECKS")
+          for _ in $(seq 1 60); do curl -fs -o /dev/null "$base$first" && break; sleep 1; done
+          while read -r path expected; do
+            [[ -z "$path" ]] && continue
+            body=$(curl -fsS "$base$path")
+            if [[ -n "$expected" && "$body" != "$expected" ]]; then
+              echo "::error::$path a renvoyé « $body », attendu « $expected »"; exit 1
+            fi
+            echo "OK $path"
+          done <<<"$CHECKS"
+          docker stop --time 10 smoke >/dev/null
+          code=$(docker inspect -f '{{.State.ExitCode}}' smoke)
+          echo "Code de sortie après SIGTERM : $code"
+          if [[ "$GRACEFUL" == true && "$code" == 137 ]]; then
+            echo "::error::Le conteneur ne s'est pas arrêté dans les 10 s après SIGTERM (tué)."; exit 1
+          fi
+
+      - name: Smoke test personnalisé
         if: inputs.smoke-command != ''
         run: ${{ inputs.smoke-command }}
 

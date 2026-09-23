@@ -7,7 +7,7 @@
 # Vérification (optionnelle, par ordre de préférence) :
 #  - expected-version + URL du service : attend que <URL><version-path> renvoie la version ;
 #  - secret RENDER_API_KEY : attend le statut `live` du déploiement via l'API Render.
-# Puis smoke-command, si fournie (variable disponible : $SERVICE_URL).
+# Puis smoke-checks et/ou smoke-command, si fournis.
 #
 # Dans le dépôt appelant (appeler avec `secrets: inherit`), environnement GitHub `render` :
 #  - secret RENDER_DEPLOY_HOOK_URL : Render > service > Settings > Deploy Hook
@@ -42,8 +42,12 @@ on:
       version-path:
         type: string
         default: /version
+      smoke-checks:
+        description: "Vérifications HTTP après déploiement, une par ligne : « <chemin> [corps attendu] »"
+        type: string
+        default: ""
       smoke-command:
-        description: "Commande de vérification après déploiement (variable : $SERVICE_URL)"
+        description: "Commande de vérification personnalisée après déploiement (variable : $SERVICE_URL)"
         type: string
         default: ""
       wait-minutes:
@@ -141,7 +145,21 @@ jobs:
           done
           echo "::error::Délai dépassé en attendant le déploiement Render"; exit 1
 
-      - name: Smoke test
+      - name: Smoke test HTTP
+        if: env.HOOK != '' && env.SERVICE_URL != '' && inputs.smoke-checks != ''
+        env:
+          CHECKS: ${{ inputs.smoke-checks }}
+        run: |
+          while read -r path expected; do
+            [[ -z "$path" ]] && continue
+            body=$(curl -fsS --retry 3 --max-time 30 "${SERVICE_URL%/}$path")
+            if [[ -n "$expected" && "$body" != "$expected" ]]; then
+              echo "::error::$path a renvoyé « $body », attendu « $expected »"; exit 1
+            fi
+            echo "OK $path"
+          done <<<"$CHECKS"
+
+      - name: Smoke test personnalisé
         if: env.HOOK != '' && env.SERVICE_URL != '' && inputs.smoke-command != ''
         run: ${{ inputs.smoke-command }}
 
