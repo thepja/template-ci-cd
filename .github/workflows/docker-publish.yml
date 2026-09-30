@@ -61,7 +61,7 @@ jobs:
           name="${INPUT:-ghcr.io/$REPO}"
           echo "image=${name,,}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.image-artifact }}
           path: ${{ runner.temp }}
@@ -107,7 +107,7 @@ jobs:
       # Attestations indisponibles sur les dépôts privés d'un compte personnel
       - name: Attestation de provenance (SLSA)
         if: inputs.attest && github.event.repository.private == false
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.name.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
